@@ -1,0 +1,112 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# =========================
+# Python environments
+# =========================
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# =========================
+# Environment / secrets
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Deep Learning Models
+# Too large for normal Git
+# =========================
+models/*.pth
+models/*.pt
+*.onnx
+
+# =========================
+# Large / generated data
+# =========================
+data/weather/*.nc
+data/weather/*.grib
+*.nc
+*.grib
+
+# DARTIS image files
+data/DARTIS/*.jpg
+data/DARTIS/*.jpeg
+data/DARTIS/*.png
+data/DARTIS/*.tif
+data/DARTIS/*.tiff
+
+# Keep DARTIS metadata
+!data/DARTIS/*.tab
+
+# =========================
+# Next.js / Node
+# =========================
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.vercel/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+# Runtime staging / generated files
+# =========================
+staging_uploads/*
+!staging_uploads/.gitkeep
+
+generated_artifacts/*
+!generated_artifacts/.gitkeep
+
+*_proof.jpg
+*.geojson
+trajectory_map_*.png
+
+# =========================
+# Logs / temporary output
+# =========================
+*.log
+*.tmp
+*.temp
+output.txt
+evaluation_output.txt
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# =========================
+# IDE / editor
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# Misc Python tooling
+# =========================
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
