@@ -110,3 +110,7 @@ desktop.ini
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Large/local frontend media
+frontend/public/14704921_3840_2160_30fps.mp4
+frontend/public/ocean-calm.jpg

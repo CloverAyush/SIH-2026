@@ -46,6 +46,35 @@ class TrajectorySimulator:
                         except ValueError:
                             continue
 
+    def _copernicus_credentials_available(self):
+        username = os.getenv('COPERNICUSMARINE_SERVICE_USERNAME')
+        password = os.getenv('COPERNICUSMARINE_SERVICE_PASSWORD')
+        if username and password:
+            return True
+
+        netrc_path = os.path.expanduser('~/_netrc')
+        if not os.path.exists(netrc_path):
+            return False
+
+        try:
+            with open(netrc_path, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+            return 'machine my.cmems-du.eu' in content and 'login ' in content and 'password ' in content
+        except OSError:
+            return False
+
+    def _era5_credentials_available(self):
+        cdsapirc_path = os.path.expanduser('~/.cdsapirc')
+        if os.path.exists(cdsapirc_path):
+            return True
+
+        url = os.getenv('CDSAPI_URL')
+        key = os.getenv('CDSAPI_KEY')
+        if url and key:
+            return True
+
+        return False
+
     def _download_weather_data(self, image_name, start_time, lons, lats, hours_to_backtrack):
         """
         Dynamically downloads ERA5 Wind and Copernicus Ocean Currents based on the 
@@ -59,21 +88,23 @@ class TrajectorySimulator:
         import copernicusmarine
         import cdsapi
 
-        # Calculate dynamic time bounds (go back in time + some padding)
-        end_time = start_time + timedelta(hours=24) # Padding forward
-        begin_time = start_time - timedelta(hours=hours_to_backtrack + 24) # Padding backward
-        # Calculate dynamic spatial bounding box (+/- 2 degrees padding for drift)
+        end_time = start_time + timedelta(hours=24)
+        begin_time = start_time - timedelta(hours=hours_to_backtrack + 24)
         min_lon, max_lon = min(lons) - 2.0, max(lons) + 2.0
         min_lat, max_lat = min(lats) - 2.0, max(lats) + 2.0
 
-        # Unique file names based on the image
         img_basename = image_name.replace('.jpg', '')
         cmems_file = os.path.join(self.cache_dir, f"cmems_currents_{img_basename}.nc")
         era5_file = os.path.join(self.cache_dir, f"era5_wind_{img_basename}.nc")
 
+        cmems_ready = False
+        era5_ready = False
         phase_status = {
             "phase": "phase_4",
-            "status": "success",
+            "status": "FAILED",
+            "requested_hours": hours_to_backtrack,
+            "simulated_hours": 0,
+            "reason": "Not yet assessed",
             "ready_for_physics": False,
             "sources": {
                 "copernicus": {"state": "UNAVAILABLE", "path": cmems_file, "message": "Not yet checked"},
@@ -82,7 +113,7 @@ class TrajectorySimulator:
             "failed_sources": [],
         }
 
-        def evaluate_source(name, file_path, fetch_func, cache_label):
+        def evaluate_source(file_path, fetch_func, cache_label):
             if os.path.exists(file_path):
                 state = "CACHED"
                 source_status = {"state": state, "path": file_path, "message": f"Using cached {cache_label} data: {file_path}"}
@@ -99,79 +130,138 @@ class TrajectorySimulator:
                     return source_status, True
                 raise FileNotFoundError(f"{cache_label} download did not produce a file at {file_path}")
             except Exception as exc:
-                source_status = {"state": "UNAVAILABLE", "path": file_path, "message": f"{cache_label} unavailable: {exc}"}
-                print(f"[-] {cache_label} data unavailable for {image_name}: {exc}")
+                message = str(exc)
+                if 'Copernicus credentials unavailable' in message or 'ERA5 credentials unavailable' in message:
+                    source_status = {"state": "UNAVAILABLE", "path": file_path, "message": message}
+                else:
+                    source_status = {"state": "UNAVAILABLE", "path": file_path, "message": f"{cache_label} unavailable"}
+                print(f"[-] {cache_label} data unavailable for {image_name}.")
                 return source_status, False
 
-        # --- DOWNLOAD COPERNICUS (OCEAN) ---
-        cmems_status, cmems_ready = evaluate_source(
-            "copernicus",
-            cmems_file,
-            lambda: copernicusmarine.subset(
-                dataset_id="cmems_mod_glo_phy_my_0.083deg_P1D-m",
-                variables=["uo", "vo"],
-                start_datetime=begin_time.strftime("%Y-%m-%dT%H:%M:%S"),
-                end_datetime=end_time.strftime("%Y-%m-%dT%H:%M:%S"),
-                minimum_longitude=min_lon,
-                maximum_longitude=max_lon,
-                minimum_latitude=min_lat,
-                maximum_latitude=max_lat,
-                output_filename=cmems_file,
-                force_download=True
-            ),
-            "Copernicus Ocean Currents"
-        )
-        phase_status["sources"]["copernicus"] = cmems_status
-
-        # --- DOWNLOAD ERA5 (WIND) ---
-        def fetch_era5():
-            c = cdsapi.Client()
-            curr_date = begin_time
-            days, months, years = set(), set(), set()
-            while curr_date <= end_time:
-                days.add(curr_date.strftime("%d"))
-                months.add(curr_date.strftime("%m"))
-                years.add(curr_date.strftime("%Y"))
-                curr_date += timedelta(days=1)
-            c.retrieve(
-                'reanalysis-era5-single-levels',
-                {
-                    'product_type': 'reanalysis',
-                    'format': 'netcdf',
-                    'variable': ['10m_u_component_of_wind', '10m_v_component_of_wind'],
-                    'year': list(years),
-                    'month': list(months),
-                    'day': list(days),
-                    'time': [f"{str(i).zfill(2)}:00" for i in range(24)],
-                    'area': [max_lat, min_lon, min_lat, max_lon],
-                },
-                era5_file
+        if not self._copernicus_credentials_available():
+            phase_status["sources"]["copernicus"] = {
+                "state": "UNAVAILABLE",
+                "path": cmems_file,
+                "message": "Copernicus credentials unavailable",
+            }
+            phase_status["failed_sources"].append("copernicus")
+        else:
+            cmems_status, cmems_ready = evaluate_source(
+                cmems_file,
+                lambda: copernicusmarine.subset(
+                    dataset_id="cmems_mod_glo_phy_my_0.083deg_P1D-m",
+                    variables=["uo", "vo"],
+                    start_datetime=begin_time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    end_datetime=end_time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    minimum_longitude=min_lon,
+                    maximum_longitude=max_lon,
+                    minimum_latitude=min_lat,
+                    maximum_latitude=max_lat,
+                    output_filename=cmems_file,
+                    force_download=True,
+                    username=os.getenv('COPERNICUSMARINE_SERVICE_USERNAME'),
+                    password=os.getenv('COPERNICUSMARINE_SERVICE_PASSWORD')
+                ),
+                "Copernicus Ocean Currents"
             )
+            phase_status["sources"]["copernicus"] = cmems_status
+            if cmems_status["state"] == "UNAVAILABLE":
+                phase_status["failed_sources"].append("copernicus")
 
-        era5_status, era5_ready = evaluate_source(
-            "era5",
-            era5_file,
-            fetch_era5,
-            "ERA5 Wind Data"
-        )
-        phase_status["sources"]["era5"] = era5_status
+        if not self._era5_credentials_available():
+            phase_status["sources"]["era5"] = {
+                "state": "UNAVAILABLE",
+                "path": era5_file,
+                "message": "ERA5 credentials unavailable",
+            }
+            phase_status["failed_sources"].append("era5")
+        else:
+            def fetch_era5():
+                c = cdsapi.Client()
+                curr_date = begin_time
+                days, months, years = set(), set(), set()
+                while curr_date <= end_time:
+                    days.add(curr_date.strftime("%d"))
+                    months.add(curr_date.strftime("%m"))
+                    years.add(curr_date.strftime("%Y"))
+                    curr_date += timedelta(days=1)
+                c.retrieve(
+                    'reanalysis-era5-single-levels',
+                    {
+                        'product_type': 'reanalysis',
+                        'format': 'netcdf',
+                        'variable': ['10m_u_component_of_wind', '10m_v_component_of_wind'],
+                        'year': list(years),
+                        'month': list(months),
+                        'day': list(days),
+                        'time': [f"{str(i).zfill(2)}:00" for i in range(24)],
+                        'area': [max_lat, min_lon, min_lat, max_lon],
+                    },
+                    era5_file
+                )
 
-        failed_sources = []
-        for source_name, source_state in phase_status["sources"].items():
-            if source_state["state"] == "UNAVAILABLE":
-                failed_sources.append(source_name)
+            era5_status, era5_ready = evaluate_source(
+                era5_file,
+                fetch_era5,
+                "ERA5 Wind Data"
+            )
+            phase_status["sources"]["era5"] = era5_status
+            if era5_status["state"] == "UNAVAILABLE":
+                phase_status["failed_sources"].append("era5")
 
-        phase_status["failed_sources"] = failed_sources
         phase_status["ready_for_physics"] = cmems_ready and era5_ready
-        if failed_sources:
-            phase_status["status"] = "failed"
+        if phase_status["failed_sources"]:
+            phase_status["status"] = "FAILED"
             phase_status["reason"] = "Required environmental data is unavailable; OpenDrift execution is blocked."
         else:
-            phase_status["status"] = "success"
+            phase_status["status"] = "COMPLETED"
             phase_status["reason"] = "Both environmental sources are available."
 
         self.last_phase4_status = phase_status
         return cmems_file, era5_file
+
+    def _trajectory_duration_hours(self, nc_file):
+        if not nc_file or not os.path.exists(nc_file):
+            return 0.0
+        try:
+            import numpy as np
+            import xarray as xr
+            with xr.open_dataset(nc_file) as ds:
+                if 'time' not in ds:
+                    return 0.0
+                times = ds['time'].values
+                if len(times) < 2:
+                    return 0.0
+                return float((np.max(times) - np.min(times)) / np.timedelta64(1, 'h'))
+        except Exception:
+            return 0.0
+
+    def _finalize_phase4_status(self, requested_hours, nc_file, error=None):
+        actual_hours = self._trajectory_duration_hours(nc_file)
+        if actual_hours > 0:
+            if actual_hours >= requested_hours:
+                status = "COMPLETED"
+                reason = "Requested duration was fully simulated."
+            else:
+                status = "PARTIAL"
+                reason = f"Simulation stopped early after {actual_hours:.1f} hours; requested {requested_hours} hours."
+        elif error and 'No more active or scheduled elements' in str(error) and os.path.exists(nc_file):
+            status = "PARTIAL"
+            reason = "OpenDrift ended early after producing a usable trajectory."
+        elif error:
+            status = "FAILED"
+            reason = f"OpenDrift failed before producing a usable trajectory: {type(error).__name__}"
+        else:
+            status = "FAILED"
+            reason = "No usable trajectory output was generated."
+
+        return {
+            "phase": "phase_4",
+            "status": status,
+            "requested_hours": requested_hours,
+            "simulated_hours": round(actual_hours, 2),
+            "reason": reason,
+        }
 
     def run_backtrack(self, geojson_path, image_name, hours_to_backtrack=48):
         """
@@ -224,27 +314,46 @@ class TrajectorySimulator:
             oil_type='GENERIC MEDIUM CRUDE'
         )
 
-        # 5. RUN THE PHYSICS ENGINE BACKWARDS
+        requested_hours = float(hours_to_backtrack)
         print(f"[*] Commencing Backwards Physics Simulation for {hours_to_backtrack} hours...")
         out_nc = self._trajectory_file_path(image_name, suffix='nc')
-        o.run(
-            duration=timedelta(hours=hours_to_backtrack),
-            time_step=-3600, 
-            time_step_output=3600,
-            outfile=str(out_nc)
-        )
 
-        # 6. EXPORT VISUALIZATION
+        try:
+            o.run(
+                duration=timedelta(hours=hours_to_backtrack),
+                time_step=-3600,
+                time_step_output=3600,
+                outfile=str(out_nc)
+            )
+            phase_status = self._finalize_phase4_status(requested_hours, out_nc)
+            if phase_status["status"] == "COMPLETED":
+                print(f"[SUCCESS] Physics Simulation Complete! Output saved to {out_nc}")
+        except Exception as exc:
+            phase_status = self._finalize_phase4_status(requested_hours, out_nc, error=exc)
+            if phase_status["status"] == "PARTIAL":
+                print(f"[-] OpenDrift stopped early after producing a usable trajectory: {exc}")
+            else:
+                print(f"[-] OpenDrift failed before producing a usable trajectory: {type(exc).__name__}")
+
         out_png = self._trajectory_file_path(image_name, suffix='png')
-        print(f"[*] Generating Trajectory Map: {out_png}...")
-        o.plot(filename=str(out_png))
-        print(f"[SUCCESS] Physics Simulation Complete! Output saved to {out_png}")
+        if phase_status["status"] in {"COMPLETED", "PARTIAL"} and os.path.exists(out_nc):
+            print(f"[*] Generating Trajectory Map: {out_png}...")
+            o.plot(filename=str(out_png))
+            phase_status["visualization_path"] = out_png
+        else:
+            phase_status["visualization_path"] = None
+
+        phase_status["phase"] = "phase_4"
+        phase_status["requested_hours"] = requested_hours
+        phase_status["simulated_hours"] = round(float(phase_status["simulated_hours"]), 2)
+        phase_status["status"] = str(phase_status["status"]).upper()
+        self.last_phase4_status = phase_status
         return phase_status
 
     def extract_origin_zone(self, image_name):
         """Reads the generated NetCDF file to get the final bounding box and time of the spill origin."""
         nc_file = self._trajectory_file_path(image_name, suffix='nc')
-        if self.last_phase4_status.get("status") == "failed":
+        if str(self.last_phase4_status.get("status", "")).upper() in {"FAILED", "NOT_RUN"}:
             print("[-] Phase 4 failed before a trajectory was produced, so no origin zone is available.")
             return None
         

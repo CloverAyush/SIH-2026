@@ -194,8 +194,8 @@ def run_pipeline(image_name, image_path=None, base_dir=None):
 
     phase4_result = simulator.run_backtrack(geojson_path, image_file_name, hours_to_backtrack=48)
     result["phase4"] = phase4_result if isinstance(phase4_result, dict) else simulator.last_phase4_status
-    if result["phase4"].get("status") == "failed":
-        print("\n[!] Phase 4 aborted because one or more required environmental datasets were unavailable.")
+    if str(result["phase4"].get("status", "")).upper() == "FAILED":
+        print("\n[!] Phase 4 aborted because no usable trajectory was produced.")
         result["status"] = "phase4_failed"
         return result
 
