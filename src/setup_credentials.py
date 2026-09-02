@@ -30,20 +30,18 @@ def setup_credentials():
     print(f"[SUCCESS] Saved Copernicus credentials to: {netrc_path}")
 
     print("\n--- 2. ERA5 / Climate Data Store (Wind) ---")
-    print("Go to https://cds.climate.copernicus.eu/user to find your UID and API Key.")
-    cds_uid = os.getenv('CDSAPI_UID')
-    cds_key = os.getenv('CDSAPI_KEY')
+    print("Go to https://cds.climate.copernicus.eu/user to generate your Personal Access Token.")
+    cds_token = os.getenv('CDSAPI_KEY')
 
-    if not cds_uid:
-        cds_uid = input("Enter your ERA5 UID (e.g. 12345): ").strip()
-    if not cds_key:
-        cds_key = getpass.getpass("Enter your ERA5 API Key: ").strip()
+    if not cds_token:
+        cds_token = getpass.getpass("Enter your CDS Personal Access Token: ").strip()
 
-    os.environ['CDSAPI_UID'] = cds_uid
-    os.environ['CDSAPI_KEY'] = cds_key
+    os.environ.pop('CDSAPI_UID', None)
+    os.environ['CDSAPI_URL'] = 'https://cds.climate.copernicus.eu/api/v2'
+    os.environ['CDSAPI_KEY'] = cds_token
 
     cdsapirc_path = os.path.join(home_dir, '.cdsapirc')
-    cdsapirc_content = f"url: https://cds.climate.copernicus.eu/api/v2\nkey: {cds_uid}:{cds_key}\n"
+    cdsapirc_content = f"url: https://cds.climate.copernicus.eu/api/v2\nkey: {cds_token}\n"
 
     with open(cdsapirc_path, 'w') as f:
         f.write(cdsapirc_content)

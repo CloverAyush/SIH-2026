@@ -66,7 +66,12 @@ class TrajectorySimulator:
     def _era5_credentials_available(self):
         cdsapirc_path = os.path.expanduser('~/.cdsapirc')
         if os.path.exists(cdsapirc_path):
-            return True
+            try:
+                with open(cdsapirc_path, 'r', encoding='utf-8') as fh:
+                    content = fh.read()
+                return 'url:' in content and 'key:' in content and any(line.strip() for line in content.splitlines() if line.strip().startswith('key:'))
+            except OSError:
+                pass
 
         url = os.getenv('CDSAPI_URL')
         key = os.getenv('CDSAPI_KEY')
@@ -135,7 +140,7 @@ class TrajectorySimulator:
                     source_status = {"state": "UNAVAILABLE", "path": file_path, "message": message}
                 else:
                     source_status = {"state": "UNAVAILABLE", "path": file_path, "message": f"{cache_label} unavailable"}
-                print(f"[-] {cache_label} data unavailable for {image_name}.")
+                print(f"[-] {cache_label} data unavailable for {image_name}: {type(exc).__name__}: {message}")
                 return source_status, False
 
         if not self._copernicus_credentials_available():
@@ -235,6 +240,31 @@ class TrajectorySimulator:
                 return float((np.max(times) - np.min(times)) / np.timedelta64(1, 'h'))
         except Exception:
             return 0.0
+
+    def _valid_plot_extent(self, nc_file):
+        if not nc_file or not os.path.exists(nc_file):
+            return None
+        try:
+            import numpy as np
+            import xarray as xr
+            with xr.open_dataset(nc_file) as ds:
+                if 'lon' not in ds or 'lat' not in ds:
+                    return None
+                lon_values = np.asarray(ds['lon'].values, dtype=float)
+                lat_values = np.asarray(ds['lat'].values, dtype=float)
+                finite_mask = np.isfinite(lon_values) & np.isfinite(lat_values)
+                if not np.any(finite_mask):
+                    return None
+                fin_lon = lon_values[finite_mask]
+                fin_lat = lat_values[finite_mask]
+                return {
+                    'lonmin': float(np.min(fin_lon)),
+                    'lonmax': float(np.max(fin_lon)),
+                    'latmin': float(np.min(fin_lat)),
+                    'latmax': float(np.max(fin_lat)),
+                }
+        except Exception:
+            return None
 
     def _finalize_phase4_status(self, requested_hours, nc_file, error=None):
         actual_hours = self._trajectory_duration_hours(nc_file)
@@ -337,9 +367,27 @@ class TrajectorySimulator:
 
         out_png = self._trajectory_file_path(image_name, suffix='png')
         if phase_status["status"] in {"COMPLETED", "PARTIAL"} and os.path.exists(out_nc):
-            print(f"[*] Generating Trajectory Map: {out_png}...")
-            o.plot(filename=str(out_png))
-            phase_status["visualization_path"] = out_png
+            plot_extent = self._valid_plot_extent(out_nc)
+            if plot_extent is None:
+                print("[-] Trajectory contains no finite coordinates; skipping OpenDrift visualization generation while preserving the successful trajectory output.")
+                phase_status["visualization_path"] = None
+            else:
+                print(f"[*] Generating Trajectory Map: {out_png}...")
+                try:
+                    try:
+                        o.plot(
+                            filename=str(out_png),
+                            lonmin=plot_extent['lonmin'],
+                            lonmax=plot_extent['lonmax'],
+                            latmin=plot_extent['latmin'],
+                            latmax=plot_extent['latmax'],
+                        )
+                    except TypeError:
+                        o.plot(filename=str(out_png))
+                    phase_status["visualization_path"] = out_png
+                except Exception as exc:
+                    print(f"[-] OpenDrift plot generation failed for a valid trajectory: {type(exc).__name__}: {exc}")
+                    phase_status["visualization_path"] = None
         else:
             phase_status["visualization_path"] = None
 

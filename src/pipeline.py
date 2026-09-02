@@ -95,7 +95,7 @@ def run_pipeline(image_name, image_path=None, base_dir=None):
         "suspects": [],
     }
 
-    gatekeeper_path = os.path.join(base_dir, '../models/robust_gatekeeper_best.pth')
+    gatekeeper_path = os.path.join(base_dir, '../models/gatekeeper_v2_best.pth')
     unet_path = os.path.join(base_dir, '../models/unet_best.pth')
     data_dir = os.path.join(base_dir, '../data/DARTIS/')
     tab_file = os.path.join(data_dir, 'DARTIS_2019.tab')
@@ -106,7 +106,7 @@ def run_pipeline(image_name, image_path=None, base_dir=None):
     # --- PHASE 1: GATEKEEPER CNN ---
     print("\n[PHASE 1] Initializing Gatekeeper CNN...")
     gatekeeper = RobustGatekeeperCNN().to(device)
-    gatekeeper.load_state_dict(torch.load(gatekeeper_path, map_location=device))
+    gatekeeper.resnet.load_state_dict(torch.load(gatekeeper_path, map_location=device))
     gatekeeper.eval()
 
     image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -123,7 +123,7 @@ def run_pipeline(image_name, image_path=None, base_dir=None):
         output = gatekeeper(tensor)
         prob = torch.sigmoid(output)
         print(f"[PHASE 1] Oil probability: {prob.item():.6f}")
-        predicted_class = 1 if prob.item() > 0.01 else 0
+        predicted_class = 1 if prob.item() > 0.50 else 0
 
     result["gatekeeper"] = {
         "probability": float(prob.item()),
@@ -212,7 +212,7 @@ def run_pipeline(image_name, image_path=None, base_dir=None):
     from core.ais_tracker import VesselTracker
     tracker = VesselTracker()
 
-    suspects = tracker.fetch_vessels_in_zone(
+    raw_suspects = tracker.fetch_vessels_in_zone(
         min_lat=origin_zone["min_lat"],
         max_lat=origin_zone["max_lat"],
         min_lon=origin_zone["min_lon"],
@@ -221,11 +221,16 @@ def run_pipeline(image_name, image_path=None, base_dir=None):
     )
 
     ranked_suspects = []
-    for ship in suspects:
+    for ship in raw_suspects:
         ship["attribution_score"] = tracker._score_vessel_for_attribution(ship, origin_zone)
+        ship["evidence_breakdown"] = ship.get("attribution_evidence", {})
+        ship["reasons"] = ship.get("human_reasons", [])
         ranked_suspects.append(ship)
 
-    result["suspects"] = ranked_suspects
+    ranked_suspects = sorted(ranked_suspects, key=lambda v: v.get("investigative_compatibility_score", 0), reverse=True)
+    result["all_suspects"] = ranked_suspects
+    result["all_suspects_count"] = len(ranked_suspects)
+    result["suspects"] = ranked_suspects[:5]
     tracker.rank_and_print_suspects(ranked_suspects, origin_zone=origin_zone)
 
     print("\n=========================================")
